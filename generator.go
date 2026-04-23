@@ -16,13 +16,13 @@ func (g *Generator) BuildPrompt(prURL string) string {
 	return fmt.Sprintf(`You are an automated documentation generator. Follow these steps exactly:
 
 1. Using che-mcp-server, start a DevWorkspace.
+2. Inject Claude code in the DevWorkspace. 
 2. In the DevWorkspace, clone git@github.com:eclipse-che/che-docs.git
-3. Install plugins: /plugin install https://github.com/tolusha/claude-plugins
-4. Add marketplace: /plugin marketplace add https://github.com/redhat-documentation/redhat-docs-agent-tools.git
-5. Install the plugin from redhat-docs-agent-tools marketplace.
-6. Using the che-docs-from-pr skill, generate documentation for this PR: %s
-7. Return ONLY the created documentation PR URL on a line by itself.
-8. Delete the DevWorkspace using che-mcp-server.`, prURL)
+3. Add marketplace: /plugin marketplace add tolusha/claude-plugins and install plugin /plugin install che-docs-from-pr@claude-plugins
+4. Add marketplace: /plugin marketplace add redhat-documentation/redhat-docs-agent-tools and install the plugin /plugin install cqa-tools@redhat-docs-agent-tools
+5. Using the che-docs-from-pr skill, generate documentation for this PR: %s
+6. Return ONLY the created documentation PR URL on a line by itself.
+7. Delete the DevWorkspace using che-mcp-server.`, prURL)
 }
 
 func (g *Generator) Run(ctx context.Context, prURL string) (string, error) {
