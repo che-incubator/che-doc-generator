@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -70,5 +74,85 @@ func main() {
 	if err != nil {
 		log.Fatalf("configuration error: %v", err)
 	}
-	log.Printf("watching repos: %v, poll interval: %v", cfg.WatchRepos, cfg.PollInterval)
+
+	ghToken := os.Getenv("GITHUB_TOKEN")
+	ghClient := newGitHubClient(ghToken)
+	gen := &Generator{Timeout: cfg.GenerationTimeout}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	sem := make(chan struct{}, cfg.MaxConcurrent)
+	var wg sync.WaitGroup
+
+	log.Printf("starting che-doc-generator: watching %v, poll every %v", cfg.WatchRepos, cfg.PollInterval)
+
+	ticker := time.NewTicker(cfg.PollInterval)
+	defer ticker.Stop()
+
+	poll := func() {
+		for _, repo := range cfg.WatchRepos {
+			parts := strings.SplitN(repo, "/", 2)
+			if len(parts) != 2 {
+				log.Printf("invalid repo format: %s (expected owner/repo)", repo)
+				continue
+			}
+			owner, repoName := parts[0], parts[1]
+
+			triggers, err := ghClient.FindTriggerComments(owner, repoName)
+			if err != nil {
+				log.Printf("error scanning %s: %v", repo, err)
+				continue
+			}
+
+			for _, trigger := range triggers {
+				if err := ghClient.AddEyesReaction(ctx, trigger.Owner, trigger.Repo, trigger.CommentID); err != nil {
+					log.Printf("error adding reaction to comment %d: %v", trigger.CommentID, err)
+					continue
+				}
+
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(t TriggerComment) {
+					defer wg.Done()
+					defer func() { <-sem }()
+
+					log.Printf("generating docs for %s/%s#%d", t.Owner, t.Repo, t.PRNumber)
+					docPRURL, err := gen.Run(t.PRURL)
+					if err != nil {
+						log.Printf("generation failed for %s/%s#%d: %v", t.Owner, t.Repo, t.PRNumber, err)
+						msg := fmt.Sprintf("Failed to generate documentation: %v", err)
+						if commentErr := ghClient.PostComment(ctx, t.Owner, t.Repo, t.PRNumber, msg); commentErr != nil {
+							log.Printf("error posting failure comment: %v", commentErr)
+						}
+						return
+					}
+
+					log.Printf("docs generated for %s/%s#%d: %s", t.Owner, t.Repo, t.PRNumber, docPRURL)
+					msg := fmt.Sprintf("Documentation PR created: %s", docPRURL)
+					if commentErr := ghClient.PostComment(ctx, t.Owner, t.Repo, t.PRNumber, msg); commentErr != nil {
+						log.Printf("error posting success comment: %v", commentErr)
+					}
+				}(trigger)
+			}
+		}
+	}
+
+	poll()
+
+	for {
+		select {
+		case <-ticker.C:
+			poll()
+		case <-sigCh:
+			log.Println("shutdown signal received, waiting for in-progress generations...")
+			cancel()
+			wg.Wait()
+			log.Println("shutdown complete")
+			return
+		}
+	}
 }
