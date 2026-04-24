@@ -66,6 +66,7 @@ func (g *Generator) Run(ctx context.Context, prURL string) (string, error) {
 		return "", fmt.Errorf("claude exited with error: %w\noutput: %s", err, string(output))
 	}
 
+	log.Printf("claude output:\n%s", string(output))
 	return parseDocPRURL(string(output))
 }
 
