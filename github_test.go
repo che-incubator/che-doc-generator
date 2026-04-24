@@ -56,6 +56,9 @@ func TestFindTriggerComments_FindsUnprocessed(t *testing.T) {
 	if triggers[0].PRNumber != 1 {
 		t.Errorf("expected PR number 1, got %d", triggers[0].PRNumber)
 	}
+	if triggers[0].CommentBody != "please @generate-che-doc for this PR" {
+		t.Errorf("expected comment body preserved, got %q", triggers[0].CommentBody)
+	}
 }
 
 func TestFindTriggerComments_SkipsProcessed(t *testing.T) {

@@ -11,11 +11,12 @@ import (
 const triggerPhrase = "@generate-che-doc"
 
 type TriggerComment struct {
-	Owner     string
-	Repo      string
-	PRNumber  int
-	CommentID int64
-	PRURL     string
+	Owner       string
+	Repo        string
+	PRNumber    int
+	CommentID   int64
+	PRURL       string
+	CommentBody string
 }
 
 type GitHubClient struct {
@@ -74,11 +75,12 @@ func (g *GitHubClient) FindTriggerComments(owner, repo string) ([]TriggerComment
 					}
 
 					triggers = append(triggers, TriggerComment{
-						Owner:     owner,
-						Repo:      repo,
-						PRNumber:  pr.GetNumber(),
-						CommentID: comment.GetID(),
-						PRURL:     pr.GetHTMLURL(),
+						Owner:       owner,
+						Repo:        repo,
+						PRNumber:    pr.GetNumber(),
+						CommentID:   comment.GetID(),
+						PRURL:       pr.GetHTMLURL(),
+						CommentBody: comment.GetBody(),
 					})
 				}
 

@@ -150,7 +150,7 @@ func main() {
 					docPRURL, err := gen.Run(ctx, t.PRURL)
 					if err != nil {
 						log.Printf("generation failed for %s/%s#%d: %v", t.Owner, t.Repo, t.PRNumber, err)
-						msg := "Failed to generate documentation. See pod logs for details."
+						msg := fmt.Sprintf("%s\n\nFailed to generate documentation. See pod logs for details.", t.CommentBody)
 						if commentErr := ghClient.UpdateComment(ctx, t.Owner, t.Repo, t.CommentID, msg); commentErr != nil {
 							log.Printf("error posting failure comment: %v", commentErr)
 						}
@@ -158,7 +158,7 @@ func main() {
 					}
 
 					log.Printf("docs generated for %s/%s#%d: %s", t.Owner, t.Repo, t.PRNumber, docPRURL)
-					msg := fmt.Sprintf("Documentation PR created: %s", docPRURL)
+					msg := fmt.Sprintf("%s\n\nDocumentation PR created: %s", t.CommentBody, docPRURL)
 					if commentErr := ghClient.UpdateComment(ctx, t.Owner, t.Repo, t.CommentID, msg); commentErr != nil {
 						log.Printf("error posting success comment: %v", commentErr)
 					}
