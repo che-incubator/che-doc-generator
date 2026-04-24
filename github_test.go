@@ -99,73 +99,29 @@ func TestFindTriggerComments_SkipsProcessed(t *testing.T) {
 	}
 }
 
-func TestUpsertComment_CreatesWhenNoneExists(t *testing.T) {
-	var created bool
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /repos/org/repo/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]*github.IssueComment{})
-	})
-
-	mux.HandleFunc("POST /repos/org/repo/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
-		created = true
-		var body github.IssueComment
-		json.NewDecoder(r.Body).Decode(&body)
-		if !strings.Contains(body.GetBody(), botCommentMarker) {
-			t.Error("comment body should contain bot marker")
-		}
-		json.NewEncoder(w).Encode(&github.IssueComment{ID: github.Ptr(int64(200))})
-	})
-
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	client := newGitHubClient("fake-token", srv.URL)
-	err := client.UpsertComment(t.Context(), "org", "repo", 1, "Doc PR created: https://example.com")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !created {
-		t.Error("expected a new comment to be created")
-	}
-}
-
-func TestUpsertComment_UpdatesExisting(t *testing.T) {
+func TestUpdateComment(t *testing.T) {
 	var updated bool
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /repos/org/repo/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
-		comments := []*github.IssueComment{
-			{
-				ID:   github.Ptr(int64(300)),
-				Body: github.Ptr(botCommentMarker + "\nOld content"),
-			},
-		}
-		json.NewEncoder(w).Encode(comments)
-	})
-
-	mux.HandleFunc("PATCH /repos/org/repo/issues/comments/300", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PATCH /repos/org/repo/issues/comments/100", func(w http.ResponseWriter, r *http.Request) {
 		updated = true
 		var body github.IssueComment
 		json.NewDecoder(r.Body).Decode(&body)
-		if !strings.Contains(body.GetBody(), botCommentMarker) {
-			t.Error("updated body should contain bot marker")
-		}
-		if !strings.Contains(body.GetBody(), "New content") {
+		if !strings.Contains(body.GetBody(), "Documentation PR created") {
 			t.Error("updated body should contain new content")
 		}
-		json.NewEncoder(w).Encode(&github.IssueComment{ID: github.Ptr(int64(300))})
+		json.NewEncoder(w).Encode(&github.IssueComment{ID: github.Ptr(int64(100))})
 	})
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	client := newGitHubClient("fake-token", srv.URL)
-	err := client.UpsertComment(t.Context(), "org", "repo", 1, "New content")
+	err := client.UpdateComment(t.Context(), "org", "repo", 100, "Documentation PR created: https://example.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !updated {
-		t.Error("expected existing comment to be updated")
+		t.Error("expected comment to be updated")
 	}
 }
