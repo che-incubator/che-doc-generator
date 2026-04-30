@@ -1,101 +1,55 @@
+//
+// Copyright (c) 2026 Red Hat, Inc.
+// Licensed under the Eclipse Public License 2.0 which is available at
+// https://www.eclipse.org/legal/epl-2.0/
+//
+// SPDX-License-Identifier: EPL-2.0
+//
+// Contributors:
+//   Red Hat, Inc. - initial API and implementation
+//
+
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
+	"regexp"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tolusha/che-doc-generator/pkg/config"
+	"github.com/tolusha/che-doc-generator/pkg/generator"
+	"github.com/tolusha/che-doc-generator/pkg/github"
 )
 
-type Config struct {
-	WatchRepos        []string
-	PollInterval      time.Duration
-	GenerationTimeout time.Duration
-	MaxConcurrent     int
-	PromptTemplate    string
-}
-
-func parseConfig() (Config, error) {
-	repos := os.Getenv("WATCH_REPOS")
-	if repos == "" {
-		return Config{}, fmt.Errorf("WATCH_REPOS environment variable is required")
-	}
-
-	pollInterval := 10 * time.Minute
-	if v := os.Getenv("POLL_INTERVAL"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid POLL_INTERVAL: %w", err)
-		}
-		pollInterval = d
-	}
-
-	genTimeout := 1 * time.Hour
-	if v := os.Getenv("GENERATION_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid GENERATION_TIMEOUT: %w", err)
-		}
-		genTimeout = d
-	}
-
-	maxConcurrent := 1
-	if v := os.Getenv("MAX_CONCURRENT"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return Config{}, fmt.Errorf("invalid MAX_CONCURRENT: %w", err)
-		}
-		if n <= 0 {
-			return Config{}, fmt.Errorf("MAX_CONCURRENT must be positive, got %d", n)
-		}
-		maxConcurrent = n
-	}
-
-	var repoList []string
-	for _, r := range strings.Split(repos, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" {
-			repoList = append(repoList, r)
-		}
-	}
-
-	promptFile := os.Getenv("PROMPT_TEMPLATE")
-	if promptFile == "" {
-		return Config{}, fmt.Errorf("PROMPT_TEMPLATE environment variable is required")
-	}
-	promptTemplate, err := loadPromptTemplate(promptFile)
-	if err != nil {
-		return Config{}, err
-	}
-
-	return Config{
-		WatchRepos:        repoList,
-		PollInterval:      pollInterval,
-		GenerationTimeout: genTimeout,
-		MaxConcurrent:     maxConcurrent,
-		PromptTemplate:    promptTemplate,
-	}, nil
-}
+var (
+	githubRepository = regexp.MustCompile(`^(?:https?://[^/]+/)?([^/]+)/([^/]+?)(?:\.git)?$`)
+)
 
 func main() {
-	cfg, err := parseConfig()
+	cfg, err := config.Parse()
 	if err != nil {
-		log.Fatalf("configuration error: %v", err)
+		log.Fatalf("[ERROR] configuration error: %v", err)
 	}
 
-	ghToken := os.Getenv("GITHUB_TOKEN")
-	if ghToken == "" {
-		log.Fatal("GITHUB_TOKEN environment variable is required")
+	setupLogging(cfg.LogFile)
+	defer func() {
+		_ = log.Writer().(*os.File).Close()
+	}()
+
+	ghClient, err := github.New(cfg)
+	if err != nil {
+		log.Fatalf("[ERROR] github.New: %v", err)
 	}
-	ghClient := newGitHubClient(ghToken)
-	gen := &Generator{Timeout: cfg.GenerationTimeout, PromptTemplate: cfg.PromptTemplate}
+
+	docGenerator, err := generator.New(ghClient, cfg)
+	if err != nil {
+		log.Fatalf("[ERROR] generator.New: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -103,69 +57,14 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	sem := make(chan struct{}, cfg.MaxConcurrent)
 	var wg sync.WaitGroup
 
-	log.Printf("starting che-doc-generator: watching %v, poll every %v", cfg.WatchRepos, cfg.PollInterval)
+	poll := pollFunc(ctx, &wg, cfg, ghClient, docGenerator)
 
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
 
-	poll := func() {
-		for _, repo := range cfg.WatchRepos {
-			slug := repo
-			if u, err := url.Parse(slug); err == nil && u.Host != "" {
-				slug = strings.TrimPrefix(u.Path, "/")
-			}
-			parts := strings.SplitN(slug, "/", 2)
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				log.Printf("invalid repo format: %s (expected owner/repo or https://github.com/owner/repo)", repo)
-				continue
-			}
-			owner, repoName := parts[0], parts[1]
-
-			triggers, err := ghClient.FindTriggerComments(owner, repoName)
-			if err != nil {
-				log.Printf("error scanning %s: %v", repo, err)
-				continue
-			}
-
-			for _, trigger := range triggers {
-				if err := ghClient.AddEyesReaction(ctx, trigger.Owner, trigger.Repo, trigger.CommentID); err != nil {
-					log.Printf("error adding reaction to comment %d: %v", trigger.CommentID, err)
-					continue
-				}
-
-				wg.Add(1)
-				go func(t TriggerComment) {
-					defer wg.Done()
-					select {
-					case sem <- struct{}{}:
-						defer func() { <-sem }()
-					case <-ctx.Done():
-						return
-					}
-
-					log.Printf("generating docs for %s/%s#%d", t.Owner, t.Repo, t.PRNumber)
-					docPRURL, err := gen.Run(ctx, t.PRURL)
-					if err != nil {
-						log.Printf("generation failed for %s/%s#%d: %v", t.Owner, t.Repo, t.PRNumber, err)
-						msg := fmt.Sprintf("%s\n\nFailed to generate documentation. See pod logs for details.", t.CommentBody)
-						if commentErr := ghClient.UpdateComment(ctx, t.Owner, t.Repo, t.CommentID, msg); commentErr != nil {
-							log.Printf("error posting failure comment: %v", commentErr)
-						}
-						return
-					}
-
-					log.Printf("docs generated for %s/%s#%d: %s", t.Owner, t.Repo, t.PRNumber, docPRURL)
-					msg := fmt.Sprintf("%s\n\nDocumentation PR created: %s", t.CommentBody, docPRURL)
-					if commentErr := ghClient.UpdateComment(ctx, t.Owner, t.Repo, t.CommentID, msg); commentErr != nil {
-						log.Printf("error posting success comment: %v", commentErr)
-					}
-				}(trigger)
-			}
-		}
-	}
+	log.Printf("[INFO] starting che-doc-generator: watching %v, poll every %v", cfg.WatchRepos, cfg.PollInterval)
 
 	poll()
 
@@ -173,12 +72,102 @@ func main() {
 		select {
 		case <-ticker.C:
 			poll()
+
 		case <-sigCh:
-			log.Println("shutdown signal received, waiting for in-progress generations...")
 			cancel()
 			wg.Wait()
-			log.Println("shutdown complete")
+
 			return
 		}
 	}
+}
+
+func setupLogging(logFilePath string) {
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("[ERROR] error opening file: %v", err)
+	}
+
+	log.SetOutput(logFile)
+}
+
+func pollFunc(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	cfg *config.Config,
+	ghClient *github.Client,
+	docGenerator *generator.Generator,
+) func() {
+	sem := make(chan struct{}, cfg.MaxConcurrent)
+
+	return func() {
+		for _, repositoryUrl := range cfg.WatchRepos {
+			owner, repo := parseRepoSlug(repositoryUrl)
+			if owner == "" || repo == "" {
+				log.Printf("[ERROR] invalid repo format: %s (expected owner/repo or https://github.com/owner/repo)", repositoryUrl)
+				continue
+			}
+
+			pullRequests, err := ghClient.GetPullRequests(ctx, owner, repo)
+			if err != nil {
+				log.Printf("[ERROR] failed to fetch pull requests: %v, owner %s, repo %s", err, owner, repo)
+				continue
+			}
+
+			for _, pullRequest := range pullRequests {
+				comments, err := ghClient.GetComments(ctx, owner, repo, *pullRequest.Number)
+				if err != nil {
+					log.Printf("[ERROR] failed to fetch comments: %v, owner %s, repo %s, pr %d", err, owner, repo, pullRequest.GetNumber())
+					continue
+				}
+
+				// post welcome message
+				if ghClient.IsPullRequestAuthorEligible(pullRequest) && !ghClient.HasWelcomeComment(comments) {
+					log.Printf("posting welcome comment on %s/%s#%d", owner, repo, pullRequest.GetNumber())
+
+					err := ghClient.PostWelcomeComment(ctx, owner, repo, pullRequest)
+					if err != nil {
+						log.Printf("[ERROR] failed to post welcome comment: %v, owner %s, repo %s, pr %d", err, owner, repo, pullRequest.GetNumber())
+					}
+				}
+
+				trigger, err := ghClient.FindTriggerComment(ctx, owner, repo, comments, pullRequest)
+				if err != nil {
+					log.Printf("[ERROR] failed to find trigger comment: %v, owner: %s, repo: %s, pr: %d", err, owner, repo, pullRequest.GetNumber())
+					continue
+				}
+
+				if trigger == nil {
+					continue
+				}
+
+				err = ghClient.AddPullRequestCommentEyesReaction(ctx, owner, repo, trigger.CommentID)
+				if err != nil {
+					log.Printf("[ERROR] failed to add :eyes: reaction: %v, on owner: %s, repo: %s, pr: %d", err, owner, repo, pullRequest.GetNumber())
+					continue
+				}
+
+				wg.Add(1)
+				go func(trigger *github.Trigger) {
+					defer wg.Done()
+					select {
+					case sem <- struct{}{}:
+						defer func() { <-sem }()
+					case <-ctx.Done():
+						return
+					}
+					docGenerator.Trigger(ctx, trigger)
+				}(trigger)
+			}
+		}
+	}
+}
+
+func parseRepoSlug(repo string) (owner, name string) {
+	m := githubRepository.FindStringSubmatch(repo)
+	if m == nil {
+		return "", ""
+	}
+
+	return m[1], m[2]
 }

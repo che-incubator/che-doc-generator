@@ -1,0 +1,275 @@
+//
+// Copyright (c) 2026 Red Hat, Inc.
+// Licensed under the Eclipse Public License 2.0 which is available at
+// https://www.eclipse.org/legal/epl-2.0/
+//
+// SPDX-License-Identifier: EPL-2.0
+//
+// Contributors:
+//   Red Hat, Inc. - initial API and implementation
+//
+
+package github
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+
+	"github.com/google/go-github/v68/github"
+	"github.com/tolusha/che-doc-generator/pkg/config"
+	"golang.org/x/oauth2"
+
+	"github.com/tolusha/che-doc-generator/pkg/commands"
+)
+
+type Trigger struct {
+	Owner       string
+	Repo        string
+	PRNumber    int
+	PRURL       string
+	CommentID   int64
+	CommentBody string
+	SubCommand  commands.SubCommandType
+}
+
+type Client struct {
+	client       *github.Client
+	allowedUsers []string
+}
+
+const (
+	eyesReaction = "eyes"
+)
+
+var (
+	welcomeMessage = commands.BuildWelcomeMessage()
+)
+
+func New(cfg *config.Config) (*Client, error) {
+	token := os.Getenv("CHE_DOC_GENERATOR_GITHUB_TOKEN")
+	if token == "" {
+		return nil, fmt.Errorf("CHE_DOC_GENERATOR_GITHUB_TOKEN environment variable is required")
+	}
+
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	httpClient := oauth2.NewClient(context.Background(), tokenSource)
+	client := github.NewClient(httpClient)
+
+	return &Client{client: client, allowedUsers: cfg.AllowedUsers}, nil
+}
+
+func (g *Client) FindTriggerComment(
+	ctx context.Context,
+	owner, repo string,
+	comments []*github.PullRequestComment,
+	pullRequest *github.PullRequest,
+) (*Trigger, error) {
+
+	for _, comment := range comments {
+		ok, subCommand := commands.Parse(comment.GetBody())
+		if !ok {
+			continue
+		}
+
+		if !g.IsPullRequestCommentAuthorEligible(comment) {
+			continue
+		}
+
+		hasEyeReaction, err := g.HasPullRequestCommentEyesReaction(ctx, owner, repo, comment.GetID())
+		if err != nil {
+			return nil, err
+		}
+
+		// Already triggered for this PR
+		if hasEyeReaction {
+			break
+		}
+
+		return &Trigger{
+			Owner:       owner,
+			Repo:        repo,
+			CommentID:   comment.GetID(),
+			PRNumber:    pullRequest.GetNumber(),
+			PRURL:       pullRequest.GetHTMLURL(),
+			CommentBody: comment.GetBody(),
+			SubCommand:  subCommand,
+		}, nil
+	}
+
+	return nil, nil
+}
+
+func (g *Client) GetPullRequests(
+	ctx context.Context,
+	owner, repo string,
+) ([]*github.PullRequest, error) {
+
+	var result []*github.PullRequest
+
+	opts := &github.PullRequestListOptions{
+		State:       "open",
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	for {
+		pullRequests, response, err := g.client.PullRequests.List(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, pullRequests...)
+
+		if response.NextPage == 0 {
+			break
+		}
+		opts.Page = response.NextPage
+	}
+
+	return result, nil
+}
+
+func (g *Client) GetComments(
+	ctx context.Context,
+	owner, repo string,
+	pullRequestNumber int,
+) ([]*github.PullRequestComment, error) {
+
+	var result []*github.PullRequestComment
+
+	opts := &github.PullRequestListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+
+	for {
+		comments, resp, err := g.client.PullRequests.ListComments(ctx, owner, repo, pullRequestNumber, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, comments...)
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return result, nil
+}
+
+func (g *Client) PostWelcomeComment(
+	ctx context.Context,
+	owner, repo string,
+	pullRequest *github.PullRequest,
+) error {
+	if err := g.PostPullRequestComment(
+		ctx,
+		owner,
+		repo,
+		pullRequest.GetNumber(),
+		welcomeMessage,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (g *Client) IsPullRequestAuthorEligible(pullRequest *github.PullRequest) bool {
+	return slices.Contains(g.allowedUsers, pullRequest.GetUser().GetLogin())
+}
+
+func (g *Client) IsPullRequestCommentAuthorEligible(comment *github.PullRequestComment) bool {
+	return slices.Contains(g.allowedUsers, comment.GetUser().GetLogin())
+}
+
+func (g *Client) HasWelcomeComment(comments []*github.PullRequestComment) bool {
+	return slices.ContainsFunc(comments, func(pr *github.PullRequestComment) bool {
+		return strings.Contains(pr.GetBody(), commands.WelcomeMarker)
+	})
+}
+
+func (g *Client) PostPullRequestComment(
+	ctx context.Context,
+	owner, repo string,
+	pullRequestNumber int,
+	body string,
+) error {
+	_, _, err := g.client.PullRequests.CreateComment(
+		ctx,
+		owner,
+		repo,
+		pullRequestNumber,
+		&github.PullRequestComment{
+			Body: github.Ptr(body),
+		},
+	)
+
+	return err
+}
+
+func (g *Client) UpdatePullRequestComment(
+	ctx context.Context,
+	owner, repo string,
+	commentID int64,
+	body string,
+) error {
+	_, _, err := g.client.PullRequests.EditComment(
+		ctx,
+		owner,
+		repo,
+		commentID,
+		&github.PullRequestComment{
+			Body: github.Ptr(body),
+		},
+	)
+
+	return err
+}
+
+func (g *Client) AddPullRequestCommentEyesReaction(
+	ctx context.Context,
+	owner, repo string,
+	commentID int64,
+) error {
+	_, _, err := g.client.Reactions.CreatePullRequestCommentReaction(
+		ctx,
+		owner,
+		repo,
+		commentID,
+		eyesReaction,
+	)
+
+	return err
+}
+
+func (g *Client) HasPullRequestCommentEyesReaction(
+	ctx context.Context,
+	owner, repo string,
+	commentID int64,
+) (bool, error) {
+	opts := &github.ListOptions{PerPage: 100}
+
+	for {
+		reactions, resp, err := g.client.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, opts)
+		if err != nil {
+			return false, err
+		}
+
+		for _, r := range reactions {
+			if r.GetContent() == eyesReaction {
+				return true, nil
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return false, nil
+}
