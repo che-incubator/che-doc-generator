@@ -141,7 +141,7 @@ func pollFunc(
 					continue
 				}
 
-				err = ghClient.AddPullRequestCommentEyesReaction(ctx, owner, repo, trigger.CommentID)
+				err = ghClient.AddIssueCommentEyesReaction(ctx, owner, repo, trigger.CommentID)
 				if err != nil {
 					log.Printf("[ERROR] failed to add :eyes: reaction: %v, on owner: %s, repo: %s, pr: %d", err, owner, repo, pullRequest.GetNumber())
 					continue

@@ -37,7 +37,7 @@ func newTestClient(allowedUsers []string, baseURL string) *Client {
 func TestFindTriggerComment_FindsUnprocessed(t *testing.T) {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /repos/org/repo/pulls/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /repos/org/repo/issues/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*gh.Reaction{})
 	})
 
@@ -50,7 +50,7 @@ func TestFindTriggerComment_FindsUnprocessed(t *testing.T) {
 		Number:  gh.Ptr(1),
 		HTMLURL: gh.Ptr("https://github.com/org/repo/pull/1"),
 	}
-	comments := []*gh.PullRequestComment{
+	comments := []*gh.IssueComment{
 		{
 			ID:   gh.Ptr(int64(100)),
 			Body: gh.Ptr("/generate-che-doc"),
@@ -87,7 +87,7 @@ func TestFindTriggerComment_FindsUnprocessed(t *testing.T) {
 func TestFindTriggerComment_ParsesSubcommand(t *testing.T) {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /repos/org/repo/pulls/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /repos/org/repo/issues/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]*gh.Reaction{})
 	})
 
@@ -97,7 +97,7 @@ func TestFindTriggerComment_ParsesSubcommand(t *testing.T) {
 	client := newTestClient([]string{"alice"}, srv.URL)
 
 	pr := &gh.PullRequest{Number: gh.Ptr(1)}
-	comments := []*gh.PullRequestComment{
+	comments := []*gh.IssueComment{
 		{
 			ID:   gh.Ptr(int64(100)),
 			Body: gh.Ptr("/generate-che-doc help"),
@@ -120,7 +120,7 @@ func TestFindTriggerComment_ParsesSubcommand(t *testing.T) {
 func TestFindTriggerComment_SkipsProcessed(t *testing.T) {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /repos/org/repo/pulls/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /repos/org/repo/issues/comments/100/reactions", func(w http.ResponseWriter, r *http.Request) {
 		reactions := []*gh.Reaction{
 			{Content: gh.Ptr("eyes")},
 		}
@@ -133,7 +133,7 @@ func TestFindTriggerComment_SkipsProcessed(t *testing.T) {
 	client := newTestClient([]string{"alice"}, srv.URL)
 
 	pr := &gh.PullRequest{Number: gh.Ptr(1)}
-	comments := []*gh.PullRequestComment{
+	comments := []*gh.IssueComment{
 		{
 			ID:   gh.Ptr(int64(100)),
 			Body: gh.Ptr("/generate-che-doc"),
@@ -157,7 +157,7 @@ func TestFindTriggerComment_SkipsUnauthorizedUser(t *testing.T) {
 	client := newTestClient([]string{"alice", "bob"}, srv.URL)
 
 	pr := &gh.PullRequest{Number: gh.Ptr(1)}
-	comments := []*gh.PullRequestComment{
+	comments := []*gh.IssueComment{
 		{
 			ID:   gh.Ptr(int64(100)),
 			Body: gh.Ptr("/generate-che-doc"),
@@ -191,7 +191,7 @@ func TestIsPullRequestAuthorEligible(t *testing.T) {
 func TestHasBotComment(t *testing.T) {
 	client := newTestClient(nil, "http://unused")
 
-	withMarker := []*gh.PullRequestComment{
+	withMarker := []*gh.IssueComment{
 		{Body: gh.Ptr("regular comment")},
 		{Body: gh.Ptr(commands.BuildWelcomeMessage())},
 	}
@@ -199,7 +199,7 @@ func TestHasBotComment(t *testing.T) {
 		t.Error("expected bot comment to be found")
 	}
 
-	withoutMarker := []*gh.PullRequestComment{
+	withoutMarker := []*gh.IssueComment{
 		{Body: gh.Ptr("regular comment")},
 	}
 	if client.HasWelcomeComment(withoutMarker) {
@@ -211,14 +211,14 @@ func TestPostWelcomeComment(t *testing.T) {
 	var posted bool
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST /repos/org/repo/pulls/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /repos/org/repo/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
 		posted = true
-		var body gh.PullRequestComment
+		var body gh.IssueComment
 		json.NewDecoder(r.Body).Decode(&body)
 		if !strings.Contains(body.GetBody(), commands.WelcomeMarker) {
 			t.Error("welcome comment should contain marker")
 		}
-		json.NewEncoder(w).Encode(&gh.PullRequestComment{ID: gh.Ptr(int64(200))})
+		json.NewEncoder(w).Encode(&gh.IssueComment{ID: gh.Ptr(int64(200))})
 	})
 
 	srv := httptest.NewServer(mux)
@@ -239,14 +239,14 @@ func TestUpdatePullRequestComment(t *testing.T) {
 	var updated bool
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("PATCH /repos/org/repo/pulls/comments/100", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PATCH /repos/org/repo/issues/comments/100", func(w http.ResponseWriter, r *http.Request) {
 		updated = true
-		var body gh.PullRequestComment
+		var body gh.IssueComment
 		json.NewDecoder(r.Body).Decode(&body)
 		if !strings.Contains(body.GetBody(), "Documentation PR created") {
 			t.Error("updated body should contain new content")
 		}
-		json.NewEncoder(w).Encode(&gh.PullRequestComment{ID: gh.Ptr(int64(100))})
+		json.NewEncoder(w).Encode(&gh.IssueComment{ID: gh.Ptr(int64(100))})
 	})
 
 	srv := httptest.NewServer(mux)

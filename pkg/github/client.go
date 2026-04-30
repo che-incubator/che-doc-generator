@@ -64,7 +64,7 @@ func New(cfg *config.Config) (*Client, error) {
 func (g *Client) FindTriggerComment(
 	ctx context.Context,
 	owner, repo string,
-	comments []*github.PullRequestComment,
+	comments []*github.IssueComment,
 	pullRequest *github.PullRequest,
 ) (*Trigger, error) {
 
@@ -74,11 +74,11 @@ func (g *Client) FindTriggerComment(
 			continue
 		}
 
-		if !g.IsPullRequestCommentAuthorEligible(comment) {
+		if !g.IsIssueCommentAuthorEligible(comment) {
 			continue
 		}
 
-		hasEyeReaction, err := g.HasPullRequestCommentEyesReaction(ctx, owner, repo, comment.GetID())
+		hasEyeReaction, err := g.HasIssueCommentEyesReaction(ctx, owner, repo, comment.GetID())
 		if err != nil {
 			return nil, err
 		}
@@ -135,16 +135,16 @@ func (g *Client) GetComments(
 	ctx context.Context,
 	owner, repo string,
 	pullRequestNumber int,
-) ([]*github.PullRequestComment, error) {
+) ([]*github.IssueComment, error) {
 
-	var result []*github.PullRequestComment
+	var result []*github.IssueComment
 
-	opts := &github.PullRequestListCommentsOptions{
+	opts := &github.IssueListCommentsOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
 	for {
-		comments, resp, err := g.client.PullRequests.ListComments(ctx, owner, repo, pullRequestNumber, opts)
+		comments, resp, err := g.client.Issues.ListComments(ctx, owner, repo, pullRequestNumber, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -182,13 +182,13 @@ func (g *Client) IsPullRequestAuthorEligible(pullRequest *github.PullRequest) bo
 	return slices.Contains(g.allowedUsers, pullRequest.GetUser().GetLogin())
 }
 
-func (g *Client) IsPullRequestCommentAuthorEligible(comment *github.PullRequestComment) bool {
+func (g *Client) IsIssueCommentAuthorEligible(comment *github.IssueComment) bool {
 	return slices.Contains(g.allowedUsers, comment.GetUser().GetLogin())
 }
 
-func (g *Client) HasWelcomeComment(comments []*github.PullRequestComment) bool {
-	return slices.ContainsFunc(comments, func(pr *github.PullRequestComment) bool {
-		return strings.Contains(pr.GetBody(), commands.WelcomeMarker)
+func (g *Client) HasWelcomeComment(comments []*github.IssueComment) bool {
+	return slices.ContainsFunc(comments, func(c *github.IssueComment) bool {
+		return strings.Contains(c.GetBody(), commands.WelcomeMarker)
 	})
 }
 
@@ -198,12 +198,12 @@ func (g *Client) PostPullRequestComment(
 	pullRequestNumber int,
 	body string,
 ) error {
-	_, _, err := g.client.PullRequests.CreateComment(
+	_, _, err := g.client.Issues.CreateComment(
 		ctx,
 		owner,
 		repo,
 		pullRequestNumber,
-		&github.PullRequestComment{
+		&github.IssueComment{
 			Body: github.Ptr(body),
 		},
 	)
@@ -217,12 +217,12 @@ func (g *Client) UpdatePullRequestComment(
 	commentID int64,
 	body string,
 ) error {
-	_, _, err := g.client.PullRequests.EditComment(
+	_, _, err := g.client.Issues.EditComment(
 		ctx,
 		owner,
 		repo,
 		commentID,
-		&github.PullRequestComment{
+		&github.IssueComment{
 			Body: github.Ptr(body),
 		},
 	)
@@ -230,12 +230,12 @@ func (g *Client) UpdatePullRequestComment(
 	return err
 }
 
-func (g *Client) AddPullRequestCommentEyesReaction(
+func (g *Client) AddIssueCommentEyesReaction(
 	ctx context.Context,
 	owner, repo string,
 	commentID int64,
 ) error {
-	_, _, err := g.client.Reactions.CreatePullRequestCommentReaction(
+	_, _, err := g.client.Reactions.CreateIssueCommentReaction(
 		ctx,
 		owner,
 		repo,
@@ -246,7 +246,7 @@ func (g *Client) AddPullRequestCommentEyesReaction(
 	return err
 }
 
-func (g *Client) HasPullRequestCommentEyesReaction(
+func (g *Client) HasIssueCommentEyesReaction(
 	ctx context.Context,
 	owner, repo string,
 	commentID int64,
@@ -254,7 +254,7 @@ func (g *Client) HasPullRequestCommentEyesReaction(
 	opts := &github.ListOptions{PerPage: 100}
 
 	for {
-		reactions, resp, err := g.client.Reactions.ListPullRequestCommentReactions(ctx, owner, repo, commentID, opts)
+		reactions, resp, err := g.client.Reactions.ListIssueCommentReactions(ctx, owner, repo, commentID, opts)
 		if err != nil {
 			return false, err
 		}
